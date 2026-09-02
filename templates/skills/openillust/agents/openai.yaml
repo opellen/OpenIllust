@@ -1,0 +1,18 @@
+interface:
+  display_name: OpenIllust
+  short_description: Campaign-driven vector asset production -- sheet-based gpt-image/vectorizer conversion, freeform plan-based conversion, and parametric fallback, gated by deterministic QC against any campaign's contract.
+  default_prompt: >-
+    Produce or revise vector assets for an OpenIllust campaign via the /opil: commands (init, sheet,
+    vectorize, redo, review, status). Every campaign's campaign.yaml is the sole style authority --
+    read its palette, canvas, stroke, and prompt fields before generating anything, and never
+    hardcode a value from memory or a different campaign. Write every creative prompt yourself;
+    scripts only build kits, convert, normalize, and validate -- they never draw product art. Use
+    the sheet pipeline (make_sheet_guide -> gpt-image -> crop_sheet -> vectorize ->
+    svg_normalize --campaign -> qc_svg --strict --campaign) as the primary route, the plan-driven
+    freeform route (references/plan-format.md) for arbitrary source art, and parametric
+    hand-authoring with trace_skeleton.py/measure_bands.py plus a render_overlay.py self-check as
+    the fallback. A qc_svg FAIL means rework or regenerate, never auto-fix or game the gate. Every
+    asset needs provenance (prompt-used.txt or a plan reference) before approval. Never open or show
+    third-party artwork to any model (clean-room); visual references must be campaign-owned. One
+    asset per generation except sheets. Stop and report to the owner after two consecutive failed
+    regenerations of the same asset.

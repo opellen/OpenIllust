@@ -1,0 +1,4 @@
+Pillow>=12.1.1
+svgelements>=1.9.6
+vtracer>=0.6.15
+pyyaml>=6.0.3

@@ -1,0 +1,36 @@
+{
+  "name": "@opellen/openillust",
+  "version": "0.1.0",
+  "description": "Campaign-driven vector asset production, distributed as skills and commands for Claude Code and Codex.",
+  "type": "module",
+  "license": "MIT",
+  "author": "San",
+  "keywords": [
+    "claude-code",
+    "codex",
+    "ai",
+    "vector",
+    "svg",
+    "design-system"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "bin": {
+    "openillust": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "templates",
+    "!**/__pycache__",
+    "!**/*.pyc"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.7.0"
+  }
+}
