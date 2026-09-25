@@ -3,9 +3,10 @@
 **Campaign-driven AI vector asset production for Claude Code and Codex.**
 
 Give it a design language — any free-form style guide — and OpenIllust turns it into a consistent,
-production-ready SVG asset set: toolbar icons, logos, illustrations. AI generates, a specialized
-converter vectorizes, deterministic scripts normalize and gate, and you approve. Nothing ships
-that doesn't pass the campaign's machine-readable contract.
+production-ready SVG asset set: toolbar icons, logos, illustrations — and the lockups and banners
+derived from them. AI generates, a specialized converter vectorizes, deterministic scripts
+normalize and gate, and you approve. Nothing ships that doesn't pass the campaign's
+machine-readable contract.
 
 ```mermaid
 flowchart LR
@@ -13,6 +14,7 @@ flowchart LR
     Y --> P["generate → vectorize →<br/>normalize → QC gate"]
     P --> R["preview → owner approval"]
     R --> A[("approved SVGs")]
+    A -->|"/opil:compose"| D["derived: lockups, banners<br/>(typeset text, exact-size renders)"] --> R
 ```
 
 ## Why
@@ -20,15 +22,16 @@ flowchart LR
 - **Consistency is enforced, not hoped for** — three layers: a text contract (your design guide,
   distilled), a visual contract (approved anchors shown at every generation), and a code contract
   (palette/canvas/margin QC that fails loudly instead of auto-fixing).
-- **The AI proposes, you approve** — batch sheets and freeform conversions both run through an
-  explicit plan → approval → execution loop.
+- **The AI proposes, you approve** — batch sheets, freeform conversions, and compositions all run
+  through an explicit plan → approval → execution loop.
 - **Deterministic where it counts** — creative judgment stays with the agent and you; everything
   repeatable (cropping, normalization, validation, provenance) is plain Python you can rerun.
 
 ## Requirements
 
 - Node.js ≥ 18 (for the installer CLI)
-- Python ≥ 3.10 (the toolchain: Pillow, svgelements, vtracer, PyYAML — installed for you)
+- Python ≥ 3.10 (the toolchain: Pillow, svgelements, vtracer, PyYAML, uharfbuzz, fontTools —
+  installed for you)
 - Claude Code and/or OpenAI Codex
 - Optional: a [Recraft](https://www.recraft.ai) API key for the highest-quality raster→vector
   conversion (~$0.01/image), in your project's `.env` as `RECRAFT_API_KEY=...` — or run fully
@@ -64,6 +67,10 @@ Then, inside Claude Code (or Codex):
 > /opil:vectorize moodboard.png
   # analyzes arbitrary art, proposes a per-asset plan (vectorize / re-author / typeset /
   # exclude), executes after your approval — text is never traced
+
+> /opil:compose product lockup: reuse the approved mark, typeset "State Designer", mark-only/horizontal/vertical
+  # assembles deliverables from assets you already approved — real-font typeset text,
+  # per-profile canvas QC, exact-size banner renders; the recipe is preserved beside the plan
 ```
 
 ## Commands
@@ -73,6 +80,7 @@ Then, inside Claude Code (or Codex):
 | `/opil:init <name>` | Create or resync a campaign: distill the design guide into `campaign.yaml` (with your approval) |
 | `/opil:sheet <assets>` | Batch-produce a family via one sprite sheet — resumable at every stage |
 | `/opil:vectorize <image>` | Freeform art → per-asset vectorization plan → approved execution |
+| `/opil:compose <brief>` | Derive lockups, banners, and social cards from approved components — plan-approved assembly, typeset text, exact-size renders |
 | `/opil:redo <slug>` | Rework one rejected asset, chained to your approved anchors |
 | `/opil:review` | Walk the approval loop; promote anchors; record verdicts |
 | `/opil:status` | Campaign dashboard derived from the filesystem |
@@ -102,7 +110,7 @@ every output passes the same normalize + QC gate. Pin one provider per asset fam
 
 ```
 templates/skills/openillust/   the skill: SKILL.md, references/, Python tools
-templates/commands/opil/       the six commands
+templates/commands/opil/       the seven commands
 src/                           installer CLI (TypeScript)
 docs/                          workflow deep-dives and design history
 ```

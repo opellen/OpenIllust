@@ -1,6 +1,6 @@
 ---
 name: openillust
-description: Produces contract-compliant vector assets (icons, logos, and related graphics) for any campaign, driven entirely by that campaign's campaign.yaml design contract -- sheet-based batch generation via gpt-image and provider-switchable vectorization (Recraft API or local vtracer), freeform plan-driven conversion of arbitrary source art, and parametric hand-authoring as a fallback, all gated by deterministic QC. Use when creating or revising assets through the /opil:* commands for an OpenIllust campaign.
+description: Produces contract-compliant vector assets (icons, logos, and related graphics) for any campaign, driven entirely by that campaign's campaign.yaml design contract -- sheet-based batch generation via gpt-image and provider-switchable vectorization (Recraft API or local vtracer), freeform plan-driven conversion of arbitrary source art, composition of derived assets (lockups, banners) from approved components, and parametric hand-authoring as a fallback, all gated by deterministic QC. Use when creating or revising assets through the /opil:* commands for an OpenIllust campaign.
 ---
 
 # OpenIllust
@@ -11,8 +11,8 @@ generalization of a production-proven icon workflow: the same production machine
 swappable per-campaign configuration instead of values baked into code or prompts.
 
 This skill is the shared brain: tool usage, QC philosophy, and prompt rules that hold across every
-campaign. It is loaded by six `/opil:*` commands -- `init`, `sheet`, `vectorize`, `redo`, `review`,
-`status` -- which own the workflow entry points and step-by-step state machines. This file states
+campaign. It is loaded by seven `/opil:*` commands -- `init`, `sheet`, `vectorize`, `compose`,
+`redo`, `review`, `status` -- which own the workflow entry points and step-by-step state machines. This file states
 principles and tool knowledge; it does not reproduce command procedures.
 
 ## The campaign contract
@@ -41,6 +41,12 @@ doesn't answer is a gap for `/opil:init`'s interview, not something to invent.
   approved.
 - One asset per generation, except sheets -- a sheet is a deliberate batch of one family's cells in
   a single generation, sliced afterward by `crop_sheet.py`.
+- Approved assets are immutable components. The `reuse` route references them verbatim
+  (translate/scale only, `approvals.md`-listed assets only) -- a recolor or path edit is a NEW
+  asset, never a mutation of an approved one.
+- Recipes are provenance for derived assets: the script that assembled or rendered a deliverable
+  is preserved beside its plan BEFORE the work is reported done -- a scratchpad-only recipe is
+  not done (rules: `references/plan-format.md`).
 - One vectorizer provider per asset family. Provider choice (campaign.yaml `tooling.vectorizer`; recraft API or local vtracer) is execution tooling, not style contract -- but a mid-family swap can shift curve texture in ways QC does not measure, so pin it for the family's lifetime.
 - Self-check before showing the owner. Run `render_overlay.py` against the SVG and its reference and
   correct visible deviations yourself; do not spend the owner's review cycle on flaws you could have
@@ -82,7 +88,7 @@ belong in the Records layer unless the owner must act on them.
 
 ## Production routes
 
-Three ways to get from a campaign to an approved asset. Each is owned by a command; this section
+Four ways to get from a campaign to an approved asset. Each is owned by a command; this section
 only orients.
 
 **Sheet pipeline (primary).** Batch-produce a family of related assets in one generation:
@@ -98,6 +104,14 @@ palette map, outputs -- the owner approves it, then execution reuses the same co
 chain (or hand-authoring, for the parametric route). No execution before `status: approved`. Owned
 by `/opil:vectorize`; format and rules in `references/plan-format.md`.
 
+**Composition pipeline.** For deliverables derived from what the campaign already owns -- lockup
+families, README banners, social cards: a brief (no source image) becomes a compose plan
+(deliverables + components via `reuse` / `typeset` / `parametric`), the owner approves, then SVG
+deliverables are assembled by a preserved recipe script and gated by
+`qc_svg.py --strict --campaign --profile <type>`, while raster deliverables are agent-authored
+HTML rendered by `render_html.py` at exact size. Owned by `/opil:compose`; plan body and rules in
+`references/plan-format.md`.
+
 **Parametric fallback.** For single hero assets, logos, or geometry the vectorizer mangles, and for
 any plan asset routed to `parametric`: hand-author the SVG directly. Measure the reference with
 `trace_skeleton.py` (vertex skeletons) and `measure_bands.py` (color-band boundaries) instead of
@@ -107,7 +121,8 @@ when reworking a single rejected asset.
 
 ## Tool roster
 
-All scripts are pure Python (Pillow / svgelements / vtracer, no GPU) under `scripts/`.
+All scripts are pure Python (Pillow / svgelements / vtracer / uharfbuzz+fontTools, no GPU)
+under `scripts/`.
 
 | Script | Input -> Output | Job | `--campaign` |
 |---|---|---|---|
@@ -117,6 +132,8 @@ All scripts are pure Python (Pillow / svgelements / vtracer, no GPU) under `scri
 | `svg_normalize.py` | raw SVG -> contract SVG | Snaps colors to the campaign palette, bakes geometry onto the campaign canvas with margin, drops junk, strips metadata | yes |
 | `qc_svg.py` | SVG -> PASS/FAIL + violations | The contract gate: palette/gradient whitelist, canvas, stroke widths, occupancy/centering, forbidden content, all read from the campaign | yes |
 | `render_overlay.py` | SVG (+ reference) -> overlay PNG | Headless render composited against the reference; the agent's self-check before QC or owner review | no |
+| `typeset_svg.py` | text + font -> outlined SVG | The typeset route made executable: HarfBuzz shaping + fontTools outlines, ink-bbox fit onto the campaign/profile canvas -- text is never traced | canvas source |
+| `render_html.py` | HTML page -> exact-size PNG/WEBP | Deterministic renderer for agent-authored HTML (raster deliverables): headless browser, exact dimensions, blank-render guard + retries, lossless webp | no |
 | `trace_skeleton.py` | raster -> vertex skeletons | Measurement aid: each region's outline as a short vertex list, for parametric re-authoring, not final output | no |
 | `measure_bands.py` | raster + axis -> band boundaries | Measurement aid: exact color-band extents along an axis, for parametric re-authoring | no |
 

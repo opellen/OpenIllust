@@ -1,8 +1,8 @@
 # OpenIllust Workflow
 
 OpenIllust turns a campaign's design language into a consistent set of contract-compliant vector
-assets — icons, logos, illustrations — through three production routes, all gated by the same
-deterministic QC. This repo is the product (`@opellen/openillust`): the skill, the six `/opil:*`
+assets — icons, logos, illustrations — through four production routes, all gated by the same
+deterministic QC. This repo is the product (`@opellen/openillust`): the skill, the seven `/opil:*`
 commands, and the Python toolchain implementing the workflow below. Every campaign that uses it
 lives in the *user's* project, under `.openillust/campaigns/<name>/` — this repo ships no campaign
 content of its own.
@@ -88,6 +88,7 @@ flowchart LR
 |---|---|---|
 | Sheet (primary) | `/opil:sheet` | batch-producing a family of related assets in one generation |
 | Freeform plan | `/opil:vectorize` | an arbitrary source image that doesn't map to a sheet |
+| Composition | `/opil:compose` | deriving lockups/banners/social cards from approved components (brief intake, no source image) |
 | Parametric fallback | reached via either route's `parametric` step, or `/opil:redo` | single hero assets, logos, or geometry the vectorizer mangles |
 
 ## Roles
@@ -114,8 +115,10 @@ design rationale are in the [deep dive](WORKFLOW-deep-dive.md).
 | `svg_normalize.py` | `templates/skills/openillust/scripts/` | raw SVG → contract SVG (palette snap, canvas bake, junk drop) |
 | `qc_svg.py` | `templates/skills/openillust/scripts/` | the contract gate: PASS/FAIL + violation list |
 | `render_overlay.py` | `templates/skills/openillust/scripts/` | headless render vs. reference — the agent's self-check |
+| `typeset_svg.py` | `templates/skills/openillust/scripts/` | text + font → outlined SVG, the typeset route made executable (HarfBuzz shaping + fontTools outlines) |
+| `render_html.py` | `templates/skills/openillust/scripts/` | agent-authored HTML → exact-size PNG/WEBP, with a blank-render guard (compose route's raster half) |
 | `trace_skeleton.py` / `measure_bands.py` | `templates/skills/openillust/scripts/` | measurement aids for the parametric fallback |
-| plan | `.openillust/campaigns/<name>/plans/<date>-<slug>.md` | freeform Plan → Approve → Execute artifact |
+| plan | `.openillust/campaigns/<name>/plans/<date>-<slug>.md` | Plan → Approve → Execute artifact (freeform vectorize or compose) |
 | approvals ledger | `.openillust/campaigns/<name>/approvals.md` | append-only record of every owner-approval moment |
 
 ## Key parameters
@@ -133,6 +136,11 @@ design rationale are in the [deep dive](WORKFLOW-deep-dive.md).
 - Vectorizer provider resolves `--provider` > `OPENILLUST_VECTORIZER` env > campaign
   `tooling.vectorizer` > `recraft` default. A missing API key is a loud error, never a silent
   fallback — pin one provider per asset family.
+- `qc_svg.py --profile <type>` gates a deliverable against its `asset_profiles.<type>` canvas
+  (scalar or non-square `[w, h]`) instead of the campaign root canvas; occupancy generalizes to
+  `max(bbox_w/W, bbox_h/H)` — the same rule as today once `W == H`.
+- `svg_normalize.py --canvas WxH` bakes geometry onto that same non-square canvas at normalize
+  time, with margin applied per axis.
 
 ## Campaign contract
 

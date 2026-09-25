@@ -1,9 +1,10 @@
 # Vectorization Plan — Format & Rules
 
-The plan is the approval artifact of the freeform flow (`/opil:vectorize`). The agent analyzes an
-arbitrary image against the campaign contract and proposes this document; the user approves
-(possibly with edits); only then does execution start. Sheet mode skips this — its manifest is a
-pre-approved plan.
+The plan is the approval artifact of the freeform flow (`/opil:vectorize`) and the composition
+flow (`/opil:compose`). The agent analyzes the source — an arbitrary image, or a derivation brief
+plus the campaign's approved assets — against the campaign contract and proposes this document;
+the user approves (possibly with edits); only then does execution start. Sheet mode skips this —
+its manifest is a pre-approved plan.
 
 ## File
 
@@ -49,11 +50,40 @@ status: proposed | approved | executed
 | **typeset** | ANY text (wordmarks, labels) | re-set with the real font — **text is never traced**; if the font is unknown, it is an open question or the asset is excluded |
 | **exclude** | captions, decorative text, non-assets | listed explicitly so the user sees what is left out |
 | **drop** | backgrounds, shadows, textures | removed at normalize (`--drop-background`, `--drop-color`) |
+| **reuse** | an APPROVED campaign asset needed as a component | referenced verbatim from the campaign (`icons/`, `anchors/`; must appear in `approvals.md`); translate/scale only — a recolor or path edit is a NEW asset (route it `parametric`) |
+| **ingest** | an externally produced SVG (designer handoff) | `svg_normalize --campaign` (non-square targets via `--canvas WxH`) → QC — the converter is skipped |
+| **compose** | a deliverable assembled from components (lockups, banners, social cards) | assembly recipe script (SVG output, gated by `qc_svg --strict --campaign --profile <type>`) or agent-authored HTML → `render_html.py` (raster output, exact-dimension + blank-render guard); components come from `reuse` / `typeset` / `parametric` rows |
 
 Route defaults, overridable by the user at approval:
 - counts of primitives ≤ ~6 and straight/arc geometry → parametric
 - photographic / 3D-rendered / heavily textured content → warn: converter will produce artifacts
   (a stated limitation of the recraft provider; local tracing fares no better); propose exclude or a regenerated flat reference instead
+
+## Compose-mode body (plans opened by `/opil:compose`)
+
+A compose plan has no source image; its tables are deliverables and components:
+
+```markdown
+## Deliverables
+| # | Output | Profile | Format | Components |
+|---|--------|---------|--------|------------|
+| 1 | lockup-horizontal.svg | lockup | svg | mark (reuse), wordmark (typeset) |
+| 2 | readme-banner-dark.webp | banner | webp | lockup #1 (reuse), heading text (HTML/CSS) |
+
+## Components
+| Component | Route | Source / text | Notes |
+|-----------|-------|---------------|-------|
+| mark | reuse | icons/logo-mark.svg | approved (see approvals.md) |
+| wordmark | typeset | "State Designer" | font → open question (default proposed) |
+
+## Layout
+- (per deliverable: assembly geometry for SVG, or the HTML recipe outline for raster)
+```
+
+Every deliverable names its `asset_profiles` profile — a campaign missing that profile gets an
+open question PROPOSING canvas/format values, never an invented one. Raster deliverables use
+agent-authored HTML rendered by `render_html.py`; text in raster deliverables may be CSS text
+(the deliverable is pixels), while text in SVG deliverables is always typeset outlines.
 
 ## Approval
 
@@ -89,3 +119,9 @@ manifests, review promotions — not only this document.
    from the source if needed, flag if the source is too small for quality.
 5. The plan lists EVERYTHING visible in the image — assets, exclusions, drops — so approval is
    informed; nothing is silently ignored.
+6. **Recipes are provenance.** Every script that produced a derived asset (assembly, typeset
+   invocation, HTML render) is copied beside the plan in `plans/` BEFORE the plan is set
+   `status: executed` — a deliverable whose recipe lives only in a session scratchpad is not
+   done.
+7. **Reused components are never mutated** — translate/scale only, and only assets recorded as
+   approved in `approvals.md` may be reused.

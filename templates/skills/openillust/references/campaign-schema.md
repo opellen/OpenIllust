@@ -42,9 +42,11 @@ prompt:                               # required for sheet mode
   avoid: |                            # the campaign avoid-block, copy-paste-able
     ...
 
-asset_profiles:                       # consumed by the freeform plan flow (not by QC yet)
-  icon:  { text: forbidden }
-  logo:  { text: allowed, canvas: 1024 }
+asset_profiles:                       # per-type overrides; QC reads them via --profile <type>
+  icon:   { text: forbidden }
+  logo:   { text: allowed, canvas: 1024 }
+  lockup: { canvas: [1024, 232] }     # canvas: scalar (square) or [w, h] (non-square)
+  banner: { canvas: [1760, 320], format: webp }  # format: svg (default) | webp | png (raster deliverables, compose flow)
 
 tooling:                              # optional — execution defaults, NOT part of the style contract
   vectorizer: recraft                 # recraft (API, best quality, needs RECRAFT_API_KEY) | vtracer (local, free, keyless)
@@ -56,4 +58,9 @@ Rules:
   `--campaign <path to campaign.yaml>` — there are no built-in style defaults. Omitting
   `palette.gradients` allows no gradients; omitting `stroke.main` disables stroke checking.
 - `dark_palette` and other campaign-specific extensions live as extra keys until a consumer needs them.
+- `qc_svg.py --profile <type>` resolves per-profile config: `asset_profiles.<type>.canvas`
+  replaces the root `canvas` (viewBox `0 0 W H`; occupancy measure `max(w-frac, h-frac)`), and a
+  profile `qc:` block overrides campaign `qc.*` field-by-field. Palette, gradients, and stroke
+  are inherited unchanged — stroke ranges are defined at root-canvas scale (documented
+  limitation: profiles at very different scales need their own stroke story later).
 - `tooling.*` is advisory execution config, not contract. Vectorizer resolution: `--provider` flag > `OPENILLUST_VECTORIZER` env > `tooling.vectorizer` > `recraft`. A missing API key is an error, never a silent provider fallback. Pin one provider per asset family.

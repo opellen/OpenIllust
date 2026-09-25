@@ -11,14 +11,17 @@ network access, no third-party dependencies.
 
 Style rules enforced, all driven by a required --campaign campaign.yaml
 (see references/campaign-schema.md):
-  - viewBox exactly "0 0 <canvas> <canvas>" for the campaign's canvas size
+  - viewBox exactly "0 0 W H" for the effective canvas: the campaign's
+    square `canvas` by default, or a per-type `asset_profiles.<type>.canvas`
+    (scalar or [w, h]) when --profile TYPE is given
   - only the campaign's allowed palette colors for fill/stroke/stop-color
   - only the campaign's whitelisted gradient ids (none, if the campaign
     declares no palette.gradients)
   - stroke width within the campaign's stroke.main range, where declared
     (skipped entirely otherwise); dashed construction-colored lines use the
     campaign's stroke.construction range, where declared
-  - content margin/centering within the campaign's qc thresholds
+  - content margin/centering within the effective (campaign or profile) qc
+    thresholds
   - no text/raster/effects content
 
 Usage:
@@ -26,6 +29,7 @@ Usage:
     python qc_svg.py --campaign CAMPAIGN --dir DIR
     python qc_svg.py --campaign CAMPAIGN FILE --strict
     python qc_svg.py --campaign CAMPAIGN FILE --json
+    python qc_svg.py --campaign CAMPAIGN --profile TYPE FILE [FILE ...]
 
 Exit codes:
     0 - all files passed
@@ -74,12 +78,14 @@ URL_REF_RE = re.compile(r'^url\(\s*[\'"]?#([A-Za-z_][\w\-.:]*)[\'"]?\s*\)$', re.
 PREC_RE = re.compile(r'-?\d+\.\d{3,}')
 
 # Canvas geometry used for margin/occupancy checks always comes from the
-# campaign's `canvas` value (see build_config()) rather than from the file's
-# own viewBox, so that a broken viewBox (caught separately by VIEWBOX001)
-# does not also corrupt the margin math.
+# effective (campaign, or campaign + --profile) canvas value (see
+# build_config()) rather than from the file's own viewBox, so that a broken
+# viewBox (caught separately by VIEWBOX001) does not also corrupt the margin
+# math.
 #
 # Margin/center-offset thresholds below are generic product defaults, used
-# only when a campaign omits the corresponding qc.* key.
+# only when neither a profile's `qc:` block nor the campaign declares the
+# corresponding qc.* key.
 MARGIN_FAIL_MAX_PCT = 86.0
 MARGIN_FAIL_MIN_PCT = 50.0
 MARGIN_WARN_MIN_PCT = 68.0
@@ -96,6 +102,16 @@ CENTER_OFFSET_WARN_PCT = 6.0
 # absent stroke.main disables stroke-width checking entirely, an absent
 # palette.gradients means no gradient id is whitelisted, and absent qc.*
 # keys fall back to the generic product defaults declared above.
+#
+# --profile TYPE (see references/campaign-schema.md, asset_profiles.<type>):
+# the profile's `canvas` (scalar -> square, [w, h] -> non-square) replaces
+# the campaign's root canvas for viewBox/margin/occupancy math, and the
+# profile's `qc:` block overrides the campaign's qc.* fields one at a time.
+# Palette, gradients, and stroke are always inherited unchanged from the
+# campaign -- a profile never touches them. Resolving --profile itself (an
+# unknown profile name, or a malformed profile canvas) is a usage error
+# handled in main(), before build_config() is called; build_config() here
+# only ever sees an already-validated (w, h) tuple or None.
 # ---------------------------------------------------------------------------
 
 def _cget(campaign, *path, default=None):
@@ -114,15 +130,61 @@ def _fmt_num(x):
     return str(int(xf)) if xf.is_integer() else str(xf)
 
 
-def build_config(campaign):
+def _resolve_profile_canvas(value):
+    """Normalize an asset_profiles.<type>.canvas value to a (w, h) tuple.
+
+    Accepts a scalar (square: w == h) or a 2-item [w, h] list/tuple
+    (non-square), per references/campaign-schema.md. Raises ValueError with
+    a human-readable message if the value is not one or two positive
+    numbers; the caller (main()) turns that into a usage error.
+    """
+    if isinstance(value, (list, tuple)):
+        if len(value) != 2:
+            raise ValueError(
+                "canvas list must have exactly 2 items [w, h] (got %r)" % (value,)
+            )
+        w_raw, h_raw = value
+    else:
+        w_raw = h_raw = value
+    try:
+        w = float(w_raw)
+        h = float(h_raw)
+    except (TypeError, ValueError):
+        raise ValueError("canvas value(s) must be numbers (got %r)" % (value,))
+    if not (w > 0 and h > 0):
+        raise ValueError("canvas value(s) must be positive (got %r)" % (value,))
+    return (w, h)
+
+
+def _qc_field(campaign, profile_qc, field):
+    """Resolve one qc.* field: a profile's qc: override wins field-by-field
+    (when present and non-null); otherwise fall back to the campaign's own
+    qc.<field> (None if the campaign omits it too, in which case
+    build_config() below applies the generic product default)."""
+    if profile_qc and field in profile_qc and profile_qc[field] is not None:
+        return profile_qc[field]
+    return _cget(campaign, "qc", field)
+
+
+def build_config(campaign, profile_canvas=None, profile_qc=None):
     """Build the effective QC config dict from a loaded campaign.
 
     campaign is a dict loaded via campaign.load_campaign(), which guarantees
     name, canvas, and palette.allowed are present. Every other key this
     function reads is optional -- see the module comment above for how each
     is defaulted or disabled when the campaign omits it.
+
+    profile_canvas, when given, is an already-validated (w, h) tuple (see
+    _resolve_profile_canvas()) that replaces the campaign's root canvas.
+    profile_qc, when given, is the asset_profiles.<type>.qc mapping (or
+    None) whose fields override the campaign's qc.* fields one at a time
+    (see _qc_field()). Both are None for the no-profile path, which must
+    behave byte-identically to a campaign with no asset_profiles at all.
     """
-    canvas = float(campaign["canvas"])
+    if profile_canvas is not None:
+        canvas_w, canvas_h = profile_canvas
+    else:
+        canvas_w = canvas_h = float(campaign["canvas"])
 
     allowed_colors = {str(c).upper() for c in campaign["palette"]["allowed"]}
 
@@ -157,12 +219,13 @@ def build_config(campaign):
         stroke_construction_requires_dash = True
         stroke_construction_width = None
 
-    occ_warn = _cget(campaign, "qc", "occupancy_warn")
-    occ_fail = _cget(campaign, "qc", "occupancy_fail")
-    center_max = _cget(campaign, "qc", "center_offset_max")
+    occ_warn = _qc_field(campaign, profile_qc, "occupancy_warn")
+    occ_fail = _qc_field(campaign, profile_qc, "occupancy_fail")
+    center_max = _qc_field(campaign, profile_qc, "center_offset_max")
 
     return {
-        "canvas": canvas,
+        "canvas_w": canvas_w,
+        "canvas_h": canvas_h,
         "allowed_colors": allowed_colors,
         "allowed_gradient_ids": allowed_gradient_ids,
         "gradient_stops": gradient_stops,
@@ -459,8 +522,9 @@ def collect_points_for_bbox(root, parent_map):
 # ---------------------------------------------------------------------------
 
 def check_viewbox(root, violations, cfg):
-    canvas = cfg["canvas"]
-    expected_str = "0 0 %s %s" % (_fmt_num(canvas), _fmt_num(canvas))
+    w = cfg["canvas_w"]
+    h = cfg["canvas_h"]
+    expected_str = "0 0 %s %s" % (_fmt_num(w), _fmt_num(h))
     vb = root.get("viewBox")
     if vb is None:
         violations.append({
@@ -473,7 +537,7 @@ def check_viewbox(root, violations, cfg):
     if len(parts) == 4:
         try:
             nums = [float(p) for p in parts]
-            ok = nums == [0.0, 0.0, canvas, canvas]
+            ok = nums == [0.0, 0.0, w, h]
         except ValueError:
             ok = False
     if not ok:
@@ -699,7 +763,8 @@ def check_forbidden_content(root, violations):
 
 
 def check_margin(root, parent_map, violations, cfg):
-    canvas = cfg["canvas"]
+    canvas_w = cfg["canvas_w"]
+    canvas_h = cfg["canvas_h"]
     margin_fail_min_pct = cfg["margin_fail_min_pct"]
     margin_fail_max_pct = cfg["margin_fail_max_pct"]
     margin_warn_min_pct = cfg["margin_warn_min_pct"]
@@ -718,22 +783,30 @@ def check_margin(root, parent_map, violations, cfg):
     ys = [p[1] for p in points]
     min_x, max_x = min(xs), max(xs)
     min_y, max_y = min(ys), max(ys)
-    w = max_x - min_x
-    h = max_y - min_y
-    dim = max(w, h)
-    pct = dim / canvas * 100.0
+    bbox_w = max_x - min_x
+    bbox_h = max_y - min_y
+    # Occupancy measure generalizes the old single-canvas "larger dimension"
+    # rule to per-axis fractions of the effective (possibly non-square)
+    # canvas; when canvas_w == canvas_h this is arithmetically identical to
+    # the old max(bbox_w, bbox_h) / canvas.
+    pct = max(bbox_w / canvas_w, bbox_h / canvas_h) * 100.0
     cx = (min_x + max_x) / 2.0
     cy = (min_y + max_y) / 2.0
-    off_x_pct = abs(cx - canvas / 2.0) / canvas * 100.0
-    off_y_pct = abs(cy - canvas / 2.0) / canvas * 100.0
-    canvas_label = _fmt_num(canvas)
+    # Center offset is measured per axis, as a fraction of THAT axis's
+    # canvas dimension (again identical to before when canvas_w == canvas_h).
+    off_x_pct = abs(cx - canvas_w / 2.0) / canvas_w * 100.0
+    off_y_pct = abs(cy - canvas_h / 2.0) / canvas_h * 100.0
+    canvas_label = (
+        _fmt_num(canvas_w) if canvas_w == canvas_h
+        else "%sx%s" % (_fmt_num(canvas_w), _fmt_num(canvas_h))
+    )
 
     if pct > margin_fail_max_pct or pct < margin_fail_min_pct:
         violations.append({
             "check": "MARGIN001", "level": "FAIL",
             "detail": "content bbox larger dimension is %.1f%% of the %s canvas "
                       "(bbox=%.1f x %.1f); must be within [%.0f%%, %.0f%%]"
-                      % (pct, canvas_label, w, h, margin_fail_min_pct, margin_fail_max_pct),
+                      % (pct, canvas_label, bbox_w, bbox_h, margin_fail_min_pct, margin_fail_max_pct),
         })
     elif pct < margin_warn_min_pct or pct > margin_warn_max_pct:
         violations.append({
@@ -847,7 +920,7 @@ def check_svg(path, cfg):
 CHECK_TABLE = [
     ("XML001", "FAIL", "SVG must be well-formed XML"),
     ("XML002", "FAIL", 'root element must be <svg xmlns="http://www.w3.org/2000/svg">'),
-    ("VIEWBOX001", "FAIL", 'viewBox must be exactly "0 0 <canvas> <canvas>" for the campaign canvas'),
+    ("VIEWBOX001", "FAIL", 'viewBox must be exactly "0 0 W H" for the effective (campaign or profile) canvas'),
     ("COLOR001", "FAIL", "fill/stroke/stop-color values must be in the campaign's allowed palette (or none / url(#id))"),
     ("GRADIENT001", "FAIL", "only linearGradient elements with a campaign-whitelisted id may be defined (none, if the campaign declares no palette.gradients)"),
     ("GRADIENT002", "FAIL", "every url(#id) color reference must resolve to a defined allowed gradient"),
@@ -857,10 +930,10 @@ CHECK_TABLE = [
     ("FORBID002", "FAIL", "inkscape/sodipodi/adobe namespaced element or attribute present"),
     ("FORBID003", "FAIL", "href/xlink:href references outside the document"),
     ("FORBID004", "FAIL", "data: URI present"),
-    ("MARGIN001", "FAIL", "content bbox larger dimension is outside the campaign's qc.occupancy_fail bounds (margin collapsed, or content too small) relative to the campaign canvas"),
+    ("MARGIN001", "FAIL", "content bbox occupancy max(bbox_w/W, bbox_h/H) is outside the effective qc.occupancy_fail bounds (margin collapsed, or content too small) for the effective (campaign or profile) canvas W x H"),
     ("DIM001", "WARN", "root <svg> has width/height attributes"),
-    ("MARGIN002", "WARN", "content bbox larger dimension outside the campaign's recommended qc.occupancy_warn range"),
-    ("MARGIN003", "WARN", "content bbox center offset from canvas center exceeds the campaign's qc.center_offset_max"),
+    ("MARGIN002", "WARN", "content bbox occupancy outside the effective recommended qc.occupancy_warn range"),
+    ("MARGIN003", "WARN", "content bbox center offset from canvas center, as a fraction of each axis, exceeds the effective qc.center_offset_max on that axis"),
     ("PREC001", "WARN", "numeric precision beyond 2 decimal places"),
     ("LINECAP001", "WARN", "stroke-linecap/linejoin present but not in {butt, miter, round}"),
 ]
@@ -884,6 +957,8 @@ def build_arg_parser():
                     help="Emit a machine-readable JSON report instead of text")
     p.add_argument("--campaign", required=True,
                     help="Path to a campaign.yaml (see references/campaign-schema.md).")
+    p.add_argument("--profile",
+                    help="asset_profiles.<type> whose canvas/qc overrides apply")
     return p
 
 
@@ -898,7 +973,44 @@ def main(argv=None):
     except CampaignError as exc:
         sys.stderr.write("qc_svg.py: error: %s\n" % exc)
         return 2
-    cfg = build_config(campaign)
+
+    # --profile resolution is a usage error (exit 2) up front, same as the
+    # other CLI validation below (--dir not found, no targets, ...): an
+    # unknown profile name or a malformed profile canvas never reaches
+    # build_config().
+    profile_canvas = None
+    profile_qc = None
+    if args.profile:
+        profiles = _cget(campaign, "asset_profiles", default={})
+        if not isinstance(profiles, dict):
+            profiles = {}
+        if args.profile not in profiles:
+            available = sorted(profiles.keys())
+            if available:
+                sys.stderr.write(
+                    "qc_svg.py: error: --profile %r not found in asset_profiles "
+                    "(available: %s)\n" % (args.profile, ", ".join(available))
+                )
+            else:
+                sys.stderr.write(
+                    "qc_svg.py: error: --profile %r not found; campaign %s declares "
+                    "no asset_profiles\n" % (args.profile, args.campaign)
+                )
+            return 2
+        profile_entry = profiles[args.profile] or {}
+        raw_canvas = _cget(profile_entry, "canvas")
+        if raw_canvas is not None:
+            try:
+                profile_canvas = _resolve_profile_canvas(raw_canvas)
+            except ValueError as exc:
+                sys.stderr.write(
+                    "qc_svg.py: error: asset_profiles.%s.canvas: %s\n"
+                    % (args.profile, exc)
+                )
+                return 2
+        profile_qc = _cget(profile_entry, "qc")
+
+    cfg = build_config(campaign, profile_canvas=profile_canvas, profile_qc=profile_qc)
 
     targets = list(args.files)
     if args.dir:

@@ -7,7 +7,7 @@
 
 두 캠페인이 이 워크플로우를 엔드투엔드로 검증했다: **Planura**(3D 건축 모델링 앱; 9개 아이콘으로 구성된
 드로잉 툴 패밀리를 시트 파이프라인으로 제작)와 **OpenGoal**(워드마크/로고 에셋을 프리폼 플랜 파이프라인으로
-제작). 둘 다 외부 캠페인이며 이 저장소 자체의 콘텐츠가 아니다 — 아래에서 등장하는 헥스 값, 그라데이션 id,
+제작했으며, 컴포지션 경로를 입증한 배너/워드마크 락업 작업의 출처이기도 하다). 둘 다 외부 캠페인이며 이 저장소 자체의 콘텐츠가 아니다 — 아래에서 등장하는 헥스 값, 그라데이션 id,
 스트로크 범위, 프롬프트 문구는 모두 해당 캠페인의 `campaign.yaml`에서 가져온 실제 예시일 뿐, OpenIllust
 자체의 고정된 규칙이 아니다.
 
@@ -42,7 +42,9 @@ templates/skills/openillust/scripts/
 ├── qc_svg.py              # [게이트] 결정론적 계약 검증기
 ├── render_overlay.py      # [자체 점검] 헤드리스 브라우저 렌더 vs. 레퍼런스, 합성
 ├── trace_skeleton.py      # [측정] 파라메트릭 재작성을 위한 버텍스 스켈레톤 추출
-└── measure_bands.py       # [측정] 축을 따른 색상 대역 경계 측정
+├── measure_bands.py       # [측정] 축을 따른 색상 대역 경계 측정
+├── typeset_svg.py         # [타입셋] 텍스트 + 폰트 -> 외곽선화된 SVG, 캔버스에 잉크 bbox 피팅
+└── render_html.py         # [렌더] 에이전트가 작성한 HTML -> 정확한 크기의 PNG/WEBP, 블랭크 샷 가드
 ```
 
 스타일 정보를 읽는 각 스크립트(`make_sheet_guide`, `svg_normalize`, `qc_svg`)는 `--campaign <campaign.yaml
@@ -50,6 +52,10 @@ templates/skills/openillust/scripts/
 `palette.gradients`를 생략한 캠페인은 그라데이션을 전혀 허용하지 않으며, `stroke.main`을 생략한 캠페인은
 스트로크 두께 검사를 전혀 받지 않는다. (`vectorize.py`도 `--campaign`을 받지만, 이는 오직
 `tooling.vectorizer` 기본값을 위한 것일 뿐 — 스타일 정보는 읽지 않는다.)
+`typeset_svg.py`도 `--campaign`(과 `--profile`)을 받지만, 이는 여러 캔버스 소스 중 하나일 뿐이다 —
+`--canvas N|WxH`만으로도 캠페인 없이 독립적으로 동작하므로 선택 사항이다. `render_html.py`는 스타일
+정보를 전혀 읽지 않는다: 래스터 산출물의 레이아웃, 색상, 타이포그래피는 전적으로 에이전트가 작성하는
+HTML 안에 있다.
 
 ### (1) 셀 매니페스트 (Cell Manifest)
 
@@ -160,7 +166,8 @@ python svg_normalize.py --input raw.svg --output icon.svg --campaign .../campaig
 - **캔버스 피팅**: *유지되는* 모든 도형의 결합 바운딩 박스를 계산한 다음, 단일 translate+scale 변환
   (`--canvas`에 `--margin`만큼의 여백을 두고 피팅; 기본값은 캠페인의 `normalize.margin` 또는 범용
   `0.13`)을 각 패스의 `d` 속성에 직접 베이킹한다 — 기하 형태는 다시 그려지는 것이 아니라 재스케일되고
-  중앙 정렬될 뿐이다.
+  중앙 정렬될 뿐이다. `--canvas`는 정사각형이 아닌 타겟을 위해 `WxH`(예: `1760x320`) 형식도 받는다:
+  여백은 축마다 적용되지만 피팅 스케일은 균일하게 유지되며, 출력 `viewBox`는 `0 0 W H`가 된다.
 - **잡음 제거**: `--drop-color HEX`는 *원본* fill이 정확히 일치하는 도형을 제거한다(예: 래스터
   변환기가 만든 그림자 레이어); `--min-area-ratio`(캠페인의 `normalize.min_area_ratio` 또는 범용
   `0.0005`)는 원본 캔버스 면적 대비 이 비율보다 작은 도형을 스펙클(speckle)로 간주해 제거한다 — 점선
@@ -194,6 +201,15 @@ python qc_svg.py --dir .openillust/campaigns/<c>/icons/ --strict --json
 사용한다 — 그래야 깨진 `viewBox`(이미 별도로 검출됨)가 마진 계산까지 함께 망가뜨리는 일이
 없다. 마진 검사에 사용되는 바운딩 박스 근사치는 진짜 곡선 극값을 구하는 대신 곡선 제어점을 bbox에
 기여하는 점으로 취급한다 — 정밀한 기하 엔진이 아니라 상식적인 게이트로서는 충분한 수준이다.
+
+**`--profile <type>`**(`--campaign` 필요)은 산출물별 캔버스로 바꿔 끼운다: 캠페인의
+`asset_profiles.<type>.canvas`(스칼라 또는 `[w, h]`)가 `viewBox`와 점유율 계산 모두에서 루트 `canvas`를
+대체하며, 프로필의 `qc:` 블록이 캠페인의 `qc.*` 임계값을 필드 단위로 오버라이드한다(프로필에 없는 키는
+여전히 캠페인 값으로, 그다음 제품 기본값으로 폴백한다). 점유율은 "더 큰 치수" 방식에서
+`max(bbox_w/W, bbox_h/H)`로 일반화되며 — `W == H`일 때는 기존 규칙과 동일하다 — MARGIN003 중앙 정렬
+검사는 하나의 공유 기준이 아니라 축마다 자신의 길이 대비 오프셋을 검사한다. 팔레트, 그라데이션, 스트로크는
+캠페인에서 그대로 상속된다; 스트로크 범위는 여전히 루트 캔버스 스케일로 정의되며, 이는 캠페인의 아이콘
+캔버스와 스케일이 크게 다른 프로필(예: 폭이 넓은 배너)에 대해서는 알려진 한계다.
 
 **규칙 표** — 코드는 범용이며 모든 캠페인에 적용된다; "예시" 열은 고정된 규칙이 아니라 Planura의 실제
 `campaign.yaml` 값을 보여줄 뿐이다:
@@ -273,6 +289,57 @@ python measure_bands.py --input .../refs/tb_pencil.png --p0 50,50 --p1 400,400 -
 재사용할 수 있게 한다(예: "몸통 너비 80 캔버스 단위; 음영은 중심선에서 시작"). 형태를 파라메트릭하게
 재작성할 때 눈대중을 정확한 수치로 대체한다.
 
+### (11) typeset_svg.py
+
+텍스트 + 폰트 → 외곽선화된 SVG. `typeset` 경로를 실행 가능하게 만든 것 — 텍스트는 절대 트레이싱하지 않는다.
+
+```bash
+python typeset_svg.py --text "State Designer" --font Inter-Medium.ttf --fill "#20211F" \
+    --output wordmark.svg --campaign .../campaign.yaml --profile lockup
+python typeset_svg.py --text "OpenGoal" --font Inter-Bold.ttf --fill "#111111" \
+    --canvas 1024 --output wordmark.svg
+```
+
+- HarfBuzz로 텍스트를 셰이핑한(문자별 어드밴스를 추정하는 것이 아니라 커닝과 리게처를 포함한 실제 글리프
+  셰이핑) 다음, 셰이핑된 각 글리프의 외곽선을 fontTools를 통해 SVG 패스 데이터로 직접 방출한다. 폰트를
+  래스터화하거나 자동 트레이싱하는 일은 전혀 없다.
+- **캔버스 결정**(먼저 일치하는 것이 우선): 명시적인 `--canvas N|WxH` → `--campaign --profile`을 통한
+  캠페인의 `asset_profiles.<profile>.canvas`(스칼라 → 정사각형, `[w, h]` → 비정사각형) → 캠페인의 루트
+  `canvas` → 소스가 없다는 것을 명시한 하드 에러. `--campaign`/`campaign.py`는 실제로 필요한 분기에서만
+  지연 임포트되므로, `--canvas`만 사용하는 호출은 PyYAML을 전혀 요구하지 않는다(`vectorize.py`와 동일한
+  하우스 패턴).
+- **사이징**: 목표 잉크 너비는 `--target-width`px, 또는 캔버스 너비의 `--target-ratio`배(기본값 `0.6`;
+  두 플래그는 상호 배타적)로 지정한다. 잉크 높이가 캔버스 높이를 초과하게 되는 경우는 더 작은 비율/너비를
+  제안하는 하드 에러이며, 조용히 눌러 담는 일은 없다.
+- `--font`는 경로를 받는다; resolve되지 않는 단순 파일명은 `%WINDIR%\Fonts\<value>`에 대해서도 시도된다.
+- **설계 철학**: text-never-traced를 실행 가능하게 만든 것. 이는 골든 검증된 프로토타입이 제품화된
+  형태다 — 셰이핑/외곽선/중앙 정렬 수학은 OpenGoal의 워드마크를 만들어낸 일회성 스크립트에서 그대로
+  유지되며 다시 도출되지 않으므로, 캠페인 중립적인 배선(wiring)이 이미 출하된 에셋으로 입증된 동작에서
+  절대 벗어나지 않는다.
+
+### (12) render_html.py
+
+에이전트가 작성한 HTML 페이지 → 정확한 크기의 PNG(+ 선택적 WEBP). `compose` 경로의 래스터 절반이자,
+"스크립트는 절대 그리지 않는다" 원칙을 구체화한 형태다: 에이전트가 자신이 작성하는 HTML/CSS의 모든
+시각적 결정을 소유하며, 이 스크립트는 그 결과가 올바르게 렌더링되는지만 증명한다.
+
+```bash
+python render_html.py --html banner.html --size 1760x320 --out banner.png \
+    --webp banner.webp --min-colors 50 --retries 3
+```
+
+- 헤드리스 Edge/Chrome을 실행하여(`render_overlay.find_browser`를 통해, 시도마다 새 임시 프로필로)
+  `--size WxH`로 페이지를 스크린샷한 다음, 저장된 PNG를 다시 열어 픽셀 치수가 요청과 정확히 일치하지
+  않으면 하드 실패한다 — 조용한 레터박싱이나 DPI 스케일링은 없다.
+- **블랭크 렌더 가드**: 스크린샷에서 서로 다른 색상의 개수를 센다; `--min-colors`(기본값 `50`) 이하인
+  렌더는 실패했거나 빈 캡처로 간주되어 `--retries`(기본값 `3`)회까지 재시도되며, 그래도 안 되면 임계값과
+  시도 횟수를 명시한 에러와 함께 종료한다.
+- `--webp`는 추가로 승인된 바로 그 프레임의 **무손실(lossless)** WEBP를 저장한다 — 재렌더링도, PNG 대비
+  화질 손실도 없다.
+- **설계 철학**: "스크립트는 절대 그리지 않는다"를 래스터 출력에 그대로 적용한 것. 레이아웃, 색상,
+  타이포그래피는 에이전트가 작성하는 HTML 안에 있다; 이 스크립트의 유일한 판단은 기계적인 것뿐이다 —
+  크기가 맞는지, 비어 있지 않은지.
+
 ### 스크립트가 아닌 컴포넌트 (Non-script Components)
 
 - **프리뷰 페이지**(`preview.html` + `variants.js`) — 오너 대상 승인용 화면(16–128px 사이즈 램프, 배경
@@ -283,19 +350,24 @@ python measure_bands.py --input .../refs/tb_pencil.png --p0 50,50 --p1 400,400 -
   상태 매니페스트(프롬프트, 레퍼런스, QC 결과, 승인 여부). `build_manifest.py`가 만들어지기 전까지는
   (아래의) `approvals.md`가 임시 원장 역할을 한다.
 
-## 프리폼 플랜 파이프라인 — Plan → Approve → Execute
+## 플랜 파이프라인 — Plan → Approve → Execute
 
-시트에 대응되지 않는 임의의 소스 이미지에 대해서는, 에이전트가 플랜을 제안하고 오너가 (수정을 거쳐서일
-수도 있게) 이를 승인한 뒤에야 실행이 시작된다. 시트 모드는 이 단계를 완전히 건너뛴다 — 시트의 매니페스트
-자체가 이미 사전 승인된 플랜이기 때문이다.
+시트에 대응되지 않는 임의의 소스 이미지에 대해서든, 캠페인이 이미 보유한 것으로부터 산출물을 조립하는
+데리베이션 브리프에 대해서든, 에이전트가 플랜을 제안하고 오너가 (수정을 거쳐서일 수도 있게) 이를 승인한
+뒤에야 실행이 시작된다. 시트 모드는 이 단계를 완전히 건너뛴다 — 시트의 매니페스트 자체가 이미 사전
+승인된 플랜이기 때문이다. `/opil:vectorize`는 이미지 소스 플랜을 열고, `/opil:compose`는 소스 이미지가
+전혀 없는 브리프 소스 플랜(락업, 배너, 소셜 카드)을 연다 — 파일 포맷과 승인 절차는 동일하며, 본문만
+다르다(아래 참고).
 
 **파일**: `.openillust/campaigns/<name>/plans/YYYY-MM-DD-<slug>.md`, 프런트매터 `campaign` /
-`source`(이미지 경로, 출처 기록을 위해 워크스페이스로 복사됨) / `status`(`proposed | approved |
-executed`) — `/opil:vectorize`를 다시 호출할 때 이 상태 마커를 기준으로 이어서 진행한다.
+`source`(`/opil:vectorize` 플랜의 경우 이미지 경로이며, 출처 기록을 위해 워크스페이스로 복사됨 —
+`/opil:compose` 플랜의 브리프에는 소스 이미지가 없음) / `status`(`proposed | approved | executed`) —
+`/opil:vectorize`나 `/opil:compose`를 다시 호출할 때 이 상태 마커를 기준으로 이어서 진행한다.
 
-**본문**: Assets 표(`# | Asset | Region (x,y,w,h) | Route | Output | Notes`), Palette map 표(원본
-색상 → 캠페인 색상 → 역할), 그리고 Open questions 목록 — 각 질문에는 기본값이 있어야 응답이 없어도
-승인이 막히지 않는다.
+**본문**(`/opil:vectorize` 플랜): Assets 표(`# | Asset | Region (x,y,w,h) | Route | Output | Notes`),
+Palette map 표(원본 색상 → 캠페인 색상 → 역할), 그리고 Open questions 목록 — 각 질문에는 기본값이 있어야
+응답이 없어도 승인이 막히지 않는다. `/opil:compose` 플랜은 다른 본문을 사용한다 — 아래 "Compose-mode
+plans" 참고.
 
 **Routes**(에셋별 핵심 판단):
 
@@ -306,11 +378,25 @@ executed`) — `/opil:vectorize`를 다시 호출할 때 이 상태 마커를 �
 | `typeset` | 텍스트가 있는 모든 경우 — 워드마크, 라벨 | 실제 폰트로 다시 조판; **텍스트는 절대 트레이싱하지 않음**; 폰트를 알 수 없으면 open question으로 남기거나 exclude |
 | `exclude` | 캡션, 장식용 텍스트, 에셋이 아닌 것 | 무엇이 빠졌는지 오너가 볼 수 있도록 명시적으로 목록화 |
 | `drop` | 배경, 그림자, 텍스처 | normalize 단계에서 제거(`--drop-background`, `--drop-color`) |
+| `reuse` | 컴포넌트로 필요한, 이미 승인된 캠페인 에셋 | `icons/`/`anchors/`에서 원문 그대로 참조(반드시 `approvals.md`에 있어야 함); translate/scale만 가능 — 리컬러나 패스 편집은 새 에셋이며 `parametric`으로 라우팅됨 |
+| `ingest` | 외부에서 제작된 SVG(디자이너 핸드오프) | 컨버터를 완전히 건너뛰고 `svg_normalize.py --campaign`(비정사각형 타겟은 `--canvas WxH`) → QC |
+| `compose` | 컴포넌트로 조립되는 산출물(락업, 배너, 소셜 카드) | 어셈블리 레시피 스크립트(SVG 출력, `qc_svg.py --strict --campaign --profile <type>`로 게이팅) 또는 에이전트가 작성한 HTML → `render_html.py`(래스터 출력, 정확한 치수 + 블랭크 렌더 가드); 컴포넌트는 위의 `reuse` / `typeset` / `parametric` 행에서 가져옴 |
 
 기본값이며 승인 시 오버라이드 가능: 직선/호 형태로 이루어진 프리미티브 개수가 약 6개 이하면
 `parametric`을 제안한다; 사진 같거나 3D 렌더링되었거나 텍스처가 많은 콘텐츠는 플래그를 단다 —
 벡터라이저가 아티팩트를 만들어낼 것이기 때문이며(두 프로바이더 모두 명시된 한계), 대신 `exclude`나 다시
 만든 플랫 레퍼런스를 제안한다.
+
+**Compose-mode plans**(`/opil:compose`가 여는, 소스 이미지가 없는 플랜): 본문은 Assets/Palette-map
+표 대신 Deliverables 표(`# | Output | Profile | Format | Components`), Components 표(`Component |
+Route | Source / text | Notes`, 각 컴포넌트 자체가 `reuse` / `typeset` / `parametric` 등으로
+라우팅됨), 그리고 Layout 섹션(SVG 출력이면 산출물별 어셈블리 기하 정보, 래스터 출력이면 HTML 레시피
+개요)을 사용한다. 모든 산출물은 `asset_profiles` 프로필 이름을 명시해야 한다; 캠페인에 해당 프로필이
+없으면 캔버스/포맷 값을 지어내지 않고 open question으로 제안한다. 파생 에셋에는 특화된 하드 룰이 두
+가지 있다: **레시피는 출처 기록이다** — 산출물을 조립하거나 렌더링한 스크립트(어셈블리 스크립트, typeset
+호출, HTML 렌더)는 `status: executed`가 되기 전에 `plans/`의 플랜 옆에 복사되어야 하며, 레시피가 세션
+스크래치패드에만 존재하는 산출물은 완료된 것이 아니다 — 그리고 **재사용되는 컴포넌트는 절대 변경되지
+않는다**: translate/scale만 가능하며, `approvals.md`에 승인된 것으로 기록된 에셋만 재사용할 수 있다.
 
 **승인 시맨틱스**(이는 프리폼 플랜뿐 아니라 시트 셀 매니페스트, 리뷰 승격 등 이 워크플로우의 모든 오너
 승인 순간을 지배한다):
@@ -333,11 +419,13 @@ executed`) — `/opil:vectorize`를 다시 호출할 때 이 상태 마커를 �
 (typeset 또는 exclude만 가능하며 제3의 옵션은 없다); 생성되는 모든 에셋은 출처 기록을 가지며 캠페인
 계약 하에서 `qc_svg.py --strict`를 통과해야 한다(에셋 타입별 캔버스, 예: 로고는 1024); 변환기에 입력되는
 영역 크롭은 짧은 변이 ≥256px이어야 한다; 플랜은 소스 이미지에 보이는 모든 것 — 에셋, exclusion, drop —
-을 나열하여 승인이 충분한 정보에 기반하도록 한다.
+을 나열하여 승인이 충분한 정보에 기반하도록 한다; 파생되는 모든 에셋의 레시피 스크립트는
+`status: executed`가 되기 전에 플랜 옆에 복사되어야 한다(레시피는 출처 기록이다); 재사용되는 컴포넌트는
+절대 변경되지 않는다 — translate/scale만 가능하며, `approvals.md`에 등재된 에셋만 가능하다.
 
 ## `/opil:*` 커맨드 표면 (Command Surface)
 
-총 여섯 개의 커맨드가 있으며, 각각 먼저 `openillust` 스킬을 로드하고 하나의 워크플로우 진입점을
+총 일곱 개의 커맨드가 있으며, 각각 먼저 `openillust` 스킬을 로드하고 하나의 워크플로우 진입점을
 소유한다. 상태는 디스크에 존재한다(directory-as-state) — 모든 커맨드는 디스크에서 발견한 상태를 기준으로
 이어서 진행한다.
 
@@ -346,6 +434,7 @@ executed`) — `/opil:vectorize`를 다시 호출할 때 이 상태 마커를 �
 | `/opil:init <name>` | 캠페인 생성 또는 재동기화: 디자인 가이드를 오너의 승인을 받아 `campaign.yaml`로 distill | `campaign.yaml`이 이미 존재하는지 여부 — 없으면 → 생성 모드; 있으면 → 필드 단위 diff를 보여주는 재동기화 모드 |
 | `/opil:sheet <family>` | 하나의 스프라이트 시트로 패밀리를 일괄 제작 | `sheets/<slug>/`의 내용물 — 매니페스트 없음 → plan; 매니페스트+kit 있고 `sheet.png` 없음 → waiting; `sheet.png` 있음 → process |
 | `/opil:vectorize <image>` | 프리폼 아트 → 에셋별 플랜 → 승인된 실행 | 플랜 프런트매터의 `status` — proposed → 승인 대화를 계속함; approved → 실행; executed → 리포트 후 인계 |
+| `/opil:compose <brief\|slug>` | 승인된 컴포넌트로부터 락업/배너/소셜 카드를 파생 → 산출물별 플랜 → 승인된 실행 | 플랜 프런트매터의 `status` — proposed → 승인 대화를 계속함; approved → 실행; executed → 리포트 후 인계 |
 | `/opil:redo <slug> [feedback]` | 반려된 에셋 하나를 앵커 체이닝으로 재작업 | 해당 에셋의 출처(시트 매니페스트 또는 플랜)와 오너의 재작업 피드백 |
 | `/opil:review` | QC를 통과한 에셋에 대해 승인 루프를 진행 | `approvals.md`에 일치하는 `approved`/`rejected` 줄이 없는 프리뷰 항목 |
 | `/opil:status [name]` | 파일시스템에서 파생되는 캠페인 대시보드 | 재개할 것이 없음 — 승인, 시트, 플랜, 계약 공백 전반에 걸친 읽기 전용 스냅샷 |
@@ -357,7 +446,7 @@ append-only 기록이다 — 절대 다시 쓰이지 않고 추가만 된다. �
 
 - **에셋별 판정**, `/opil:review`가 기록: `YYYY-MM-DD <slug> approved|rejected [note]`. QC를 통과한
   에셋만 판정 대상으로 제시된다.
-- **플랜 승인**, 위 프리폼 파이프라인의 Durable-write 규칙에 따라 기록: 날짜, 플랜 경로, 오너의 승인
+- **플랜 승인**, 위 플랜 파이프라인의 Durable-write 규칙에 따라 기록: 날짜, 플랜 경로, 오너의 승인
   발언 원문, 확정된 기본값.
 
 이는 `build_manifest.py`가 만들어져 상태를 기계적으로 집계하기 전까지의 명백한 임시 원장이다; 앵커
@@ -422,7 +511,7 @@ flowchart LR
 | `qc.occupancy_warn` / `occupancy_fail` / `center_offset_max` | 필수 | 게이트 임계값, 캔버스 대비 비율 |
 | `normalize.margin` / `min_area_ratio` | 선택 | `svg_normalize.py`의 기본값 |
 | `prompt.palette_rules` / `style_rules` / `avoid` | 시트 모드에 필수 | 시트 생성 프롬프트에 원문 그대로 삽입되는 문구 |
-| `asset_profiles.<type>` | 선택 | 타입별 정책, 예: `{ text: forbidden }`, `{ text: allowed, canvas: 1024 }` — 프리폼 플랜 플로우가 사용하며, 아직 `qc_svg.py`는 읽지 않음 |
+| `asset_profiles.<type>` | 선택 | 타입별 오버라이드 — `canvas`(스칼라 또는 `[w, h]`), 선택적인 `qc:` 임계값 오버라이드 블록, 래스터 산출물을 위한 `format: svg\|webp\|png`. `qc_svg.py --profile <type>`이 읽으며(canvas가 루트 canvas를 대체; `qc:`는 필드 단위로 오버라이드) compose 플로우가 산출물 포맷을 위해 읽는다 |
 | `tooling.vectorizer` | 선택 | 실행 기본값(`recraft` 또는 `vtracer`) — 참고용일 뿐 스타일 계약의 일부는 아님 |
 
 알 수 없는 추가 키는 허용된다(캠페인마다 다르며, 소비자는 자신이 아는 키만 읽는다). `/opil:init`은

@@ -1,15 +1,16 @@
 # OpenIllust Workflow — Deep Dive
 
 Per-component detail behind [`WORKFLOW.md`](WORKFLOW.md): what every script and artifact actually
-does, why it exists, the QC rule table, the freeform plan/approval semantics, the `/opil:*` command
-surface, and the campaign contract schema. Read the overview first for the pipeline diagrams and
-the three-layer consistency model; this document does not redraw them.
+does, why it exists, the QC rule table, the plan/approval semantics (freeform and compose), the
+`/opil:*` command surface, and the campaign contract schema. Read the overview first for the
+pipeline diagrams and the three-layer consistency model; this document does not redraw them.
 
 Two campaigns have validated this workflow end-to-end: **Planura** (a 3D architectural modeling
 app; a 9-icon draw-tool family run through the sheet pipeline) and **OpenGoal** (a wordmark/logo
-asset run through the freeform plan pipeline). Both are external campaigns, not this repo's
-content — wherever a hex, a gradient id, a stroke range, or a prompt line appears below, it is a
-worked example of that campaign's `campaign.yaml`, not a fixed rule of OpenIllust itself.
+asset run through the freeform plan pipeline, and the source of the banner/wordmark lockup work
+that proved out the composition route). Both are external campaigns, not this repo's content —
+wherever a hex, a gradient id, a stroke range, or a prompt line appears below, it is a worked
+example of that campaign's `campaign.yaml`, not a fixed rule of OpenIllust itself.
 
 ## Consistency model recap
 
@@ -42,7 +43,9 @@ templates/skills/openillust/scripts/
 ├── qc_svg.py              # [gate] deterministic contract validator
 ├── render_overlay.py      # [self-check] headless browser render vs. reference, composited
 ├── trace_skeleton.py      # [measure] vertex skeleton extraction for parametric re-authoring
-└── measure_bands.py       # [measure] color-band boundary measurement along an axis
+├── measure_bands.py       # [measure] color-band boundary measurement along an axis
+├── typeset_svg.py         # [typeset] text + font -> outlined SVG, ink-bbox fit onto canvas
+└── render_html.py         # [render] agent-authored HTML -> exact-size PNG/WEBP, blank-shot guard
 ```
 
 Each script that reads style facts (`make_sheet_guide`, `svg_normalize`, `qc_svg`) REQUIRES
@@ -50,6 +53,10 @@ Each script that reads style facts (`make_sheet_guide`, `svg_normalize`, `qc_svg
 only style authority. A campaign that omits `palette.gradients` allows no gradients at all, and
 one that omits `stroke.main` gets no stroke-width checking. (`vectorize.py` also accepts
 `--campaign`, but only for the `tooling.vectorizer` default — it reads no style facts.)
+`typeset_svg.py` accepts `--campaign` (with `--profile`) too, but only as one of several canvas
+sources — it is optional, since `--canvas N|WxH` works standalone with no campaign at all.
+`render_html.py` reads no style facts whatsoever: layout, color, and typography for a raster
+deliverable live entirely in the HTML the agent authors.
 
 ### (1) Cell manifest
 
@@ -164,7 +171,9 @@ python svg_normalize.py --input raw.svg --output icon.svg --campaign .../campaig
 - **Canvas fit**: computes the combined bounding box of every *kept* shape, then bakes a single
   translate+scale (fit into `--canvas` with `--margin` empty border, default from the campaign's
   `normalize.margin` or generic `0.13`) directly into each path's `d` attribute — geometry is
-  rescaled and centered, never redrawn.
+  rescaled and centered, never redrawn. `--canvas` also takes `WxH` (e.g. `1760x320`) for a
+  non-square target: the margin is applied per axis, the fit scale stays uniform, and the output
+  `viewBox` becomes `0 0 W H`.
 - **Junk removal**: `--drop-color HEX` removes shapes whose *original* fill exactly matches (e.g. a
   raster converter's shadow layer); `--min-area-ratio` (campaign `normalize.min_area_ratio` or
   generic `0.0005`) drops shapes smaller than that fraction of the source canvas area as speckle —
@@ -201,6 +210,16 @@ Content-occupancy and centering math uses the *contract's* expected canvas size
 so a broken `viewBox` (already caught separately) can't also corrupt the margin math. The
 bounding-box approximation used for margin checks treats curve control points as bbox-contributing
 points rather than solving true curve extrema — adequate for a sanity gate, not a geometry engine.
+
+**`--profile <type>`** (requires `--campaign`) swaps in a per-deliverable canvas: the campaign's
+`asset_profiles.<type>.canvas` (scalar or `[w, h]`) replaces the root `canvas` for both `viewBox`
+and occupancy math, and a profile `qc:` block overrides the campaign's `qc.*` thresholds
+field-by-field (an unset profile key still falls back to the campaign, then the product default).
+Occupancy generalizes from "larger dimension" to `max(bbox_w/W, bbox_h/H)` — identical to the old
+rule once `W == H` — and MARGIN003 centering checks each axis's offset against that axis's own
+length rather than a single shared bound. Palette, gradients, and stroke are inherited from the
+campaign unchanged; stroke ranges stay defined at root-canvas scale, a documented limitation for a
+profile at a very different scale (e.g. a wide banner) than the campaign's icon canvas.
 
 **Rule table** — codes are generic and apply to every campaign; the "example" column shows
 Planura's actual `campaign.yaml` values, not a fixed rule:
@@ -280,6 +299,58 @@ occupy on the 512 canvas, for direct coordinate reuse (e.g. "body width 80 canva
 starts at the centerline"). Replaces eyeballing with exact numbers when rebuilding geometry
 parametrically.
 
+### (11) typeset_svg.py
+
+text + font → outlined SVG. The `typeset` route made executable — text is never traced.
+
+```bash
+python typeset_svg.py --text "State Designer" --font Inter-Medium.ttf --fill "#20211F" \
+    --output wordmark.svg --campaign .../campaign.yaml --profile lockup
+python typeset_svg.py --text "OpenGoal" --font Inter-Bold.ttf --fill "#111111" \
+    --canvas 1024 --output wordmark.svg
+```
+
+- Shapes the text with HarfBuzz (real glyph shaping — kerning and ligatures, not per-character
+  advance guessing), then emits each shaped glyph's outline directly as SVG path data via
+  fontTools. No font is ever rasterized or auto-traced.
+- **Canvas resolution** (first match wins): an explicit `--canvas N|WxH` → the campaign's
+  `asset_profiles.<profile>.canvas` via `--campaign --profile` (scalar → square, `[w, h]` →
+  non-square) → the campaign's root `canvas` → a hard error naming the missing source.
+  `--campaign`/`campaign.py` is imported lazily, only on the branch that actually needs it, so a
+  `--canvas`-only invocation never requires PyYAML (the same house pattern as `vectorize.py`).
+- **Sizing**: the target ink width is `--target-width` px, or `--target-ratio` × the canvas width
+  (default `0.6`; the two flags are mutually exclusive). An ink height that would exceed the canvas
+  height is a hard error suggesting a smaller ratio/width, never a silent squeeze.
+- `--font` accepts a path; a bare filename that doesn't resolve is also tried against
+  `%WINDIR%\Fonts\<value>`.
+- **Design philosophy**: text-never-traced made executable. It is the productized form of a
+  golden-verified prototype — the shaping/outline/centering math is kept intact from the one-off
+  script that produced OpenGoal's wordmark, not re-derived, so campaign-neutral wiring never
+  drifts from behavior already proven against a shipped asset.
+
+### (12) render_html.py
+
+agent-authored HTML page → exact-size PNG (+ optional WEBP). The `compose` route's raster half,
+and the concrete form of the scripts-never-draw split: the agent owns every visual decision in the
+HTML/CSS it writes, and this script only proves the result renders correctly.
+
+```bash
+python render_html.py --html banner.html --size 1760x320 --out banner.png \
+    --webp banner.webp --min-colors 50 --retries 3
+```
+
+- Launches headless Edge/Chrome (via `render_overlay.find_browser`, a fresh temp profile per
+  attempt) to screenshot the page at `--size WxH`, then re-opens the saved PNG and hard-fails if
+  its pixel dimensions don't exactly match the request — no silent letterboxing or DPI scaling.
+- **Blank-render guard**: counts distinct colors in the shot; a render at or under `--min-colors`
+  (default `50`) is treated as a flaked or blank capture and retried, up to `--retries` (default
+  `3`) attempts, before exiting with an explicit error naming the threshold and attempt count.
+- `--webp` additionally saves a **lossless** WEBP of that same accepted frame — no re-render, no
+  quality loss relative to the PNG.
+- **Design philosophy**: scripts never draw, made literal for raster output. Layout, color, and
+  typography live in HTML the agent authors; the script's only judgment is a mechanical one —
+  right size, not blank.
+
 ### Non-script components
 
 - **Preview page** (`preview.html` + `variants.js`) — the owner-facing acceptance view (a size ramp
@@ -291,20 +362,25 @@ parametrically.
   reference, QC result, approval) aggregated from the filesystem. `approvals.md` (below) is the
   interim ledger until it exists.
 
-## Freeform plan pipeline — Plan → Approve → Execute
+## Plan pipeline — Plan → Approve → Execute
 
-For an arbitrary source image that doesn't map to a sheet, the agent proposes a plan; the owner
-approves it (possibly with edits); only then does execution start. Sheet mode skips this step
-entirely — its manifest is a pre-approved plan.
+For an arbitrary source image that doesn't map to a sheet, or a derivation brief for assembling
+deliverables from what the campaign already owns, the agent proposes a plan; the owner approves it
+(possibly with edits); only then does execution start. Sheet mode skips this step entirely — its
+manifest is a pre-approved plan. `/opil:vectorize` opens image-sourced plans; `/opil:compose` opens
+brief-sourced plans with no source image at all (lockups, banners, social cards) — same file
+format, same approval machinery, a different body (below).
 
 **File**: `.openillust/campaigns/<name>/plans/YYYY-MM-DD-<slug>.md`, front-matter
-`campaign` / `source` (the image path, copied into the workspace for provenance) / `status`
-(`proposed | approved | executed`) — the state marker a re-invocation of `/opil:vectorize` resumes
-from.
+`campaign` / `source` (the image path for a `/opil:vectorize` plan, copied into the workspace for
+provenance — a `/opil:compose` plan's brief has no source image) / `status`
+(`proposed | approved | executed`) — the state marker a re-invocation of `/opil:vectorize` or
+`/opil:compose` resumes from.
 
-**Body**: an Assets table (`# | Asset | Region (x,y,w,h) | Route | Output | Notes`), a Palette map
-table (source color → campaign color → role), and an Open questions list — each question should
-carry a default so silence doesn't block approval.
+**Body** (`/opil:vectorize` plans): an Assets table (`# | Asset | Region (x,y,w,h) | Route | Output
+| Notes`), a Palette map table (source color → campaign color → role), and an Open questions list —
+each question should carry a default so silence doesn't block approval. A `/opil:compose` plan uses
+a different body — see "Compose-mode plans" below.
 
 **Routes** (the core per-asset judgment):
 
@@ -315,11 +391,27 @@ carry a default so silence doesn't block approval.
 | `typeset` | ANY text — wordmarks, labels | re-set with the real font; **text is never traced**; unknown font → open question or exclude |
 | `exclude` | captions, decorative text, non-assets | listed explicitly so the owner sees what's left out |
 | `drop` | backgrounds, shadows, textures | removed at normalize time (`--drop-background`, `--drop-color`) |
+| `reuse` | an approved campaign asset needed as a component | referenced verbatim from `icons/`/`anchors/` (must appear in `approvals.md`); translate/scale only — a recolor or path edit is a new asset, routed `parametric` |
+| `ingest` | an externally produced SVG (designer handoff) | `svg_normalize.py --campaign` (`--canvas WxH` for non-square targets) → QC, skipping the converter entirely |
+| `compose` | a deliverable assembled from components (lockups, banners, social cards) | an assembly recipe script (SVG output, gated by `qc_svg.py --strict --campaign --profile <type>`) or agent-authored HTML → `render_html.py` (raster output, exact-dimension + blank-render guard); components come from the `reuse` / `typeset` / `parametric` rows above |
 
 Defaults, overridable at approval: primitive count ≤~6 with straight/arc geometry suggests
 `parametric`; photographic/3D-rendered/heavily textured content is flagged — the vectorizer will
 produce artifacts (a stated limitation shared by both providers) — proposing `exclude` or a
 regenerated flat reference instead.
+
+**Compose-mode plans** (opened by `/opil:compose`, no source image): the body swaps the Assets/
+Palette-map tables for a Deliverables table (`# | Output | Profile | Format | Components`), a
+Components table (`Component | Route | Source / text | Notes`, each component itself routed
+`reuse` / `typeset` / `parametric` / etc.), and a Layout section (per-deliverable assembly geometry
+for an SVG output, or the HTML recipe outline for a raster one). Every deliverable names an
+`asset_profiles` profile; a campaign missing that profile becomes an open question proposing
+canvas/format values, never an invented one. Two hard rules are specific to derived assets:
+**recipes are provenance** — the script that assembled or rendered a deliverable (assembly script,
+typeset invocation, HTML render) is copied beside the plan in `plans/` before `status: executed`,
+so a deliverable whose recipe lives only in a session scratchpad is not done — and **reused
+components are never mutated**: translate/scale only, and only assets recorded as approved in
+`approvals.md` may be reused.
 
 **Approval semantics** (these govern every owner-approval moment in the workflow — freeform plans,
 sheet cell manifests, and review promotions alike, not only this document):
@@ -342,18 +434,21 @@ sheet cell manifests, and review promotions alike, not only this document):
 no third option); every produced asset gets provenance and passes `qc_svg.py --strict` under the
 campaign contract (per-asset-type canvas, e.g. a logo at 1024); region crops feeding the converter
 need ≥256px on the short side; the plan lists everything visible in the source image — assets,
-exclusions, and drops — so approval is fully informed.
+exclusions, and drops — so approval is fully informed; every derived asset's recipe script is
+copied beside the plan before `status: executed` (recipes are provenance); reused components are
+never mutated — translate/scale only, `approvals.md`-listed assets only.
 
 ## The `/opil:*` command surface
 
-Six commands, each loading the `openillust` skill first and owning one workflow entry point. State
-lives on disk (directory-as-state) — every command resumes from what it finds there.
+Seven commands, each loading the `openillust` skill first and owning one workflow entry point.
+State lives on disk (directory-as-state) — every command resumes from what it finds there.
 
 | Command | Does | Resumes from |
 |---|---|---|
 | `/opil:init <name>` | Create or resync a campaign: distill the design guide into `campaign.yaml`, with the owner's approval | whether `campaign.yaml` already exists — absent → create mode; present → resync mode with a field-level diff |
 | `/opil:sheet <family>` | Batch-produce a family via one sprite sheet | the contents of `sheets/<slug>/` — no manifest → plan; manifest + kit, no `sheet.png` → waiting; `sheet.png` present → process |
 | `/opil:vectorize <image>` | Freeform art → per-asset plan → approved execution | the plan's front-matter `status` — proposed → continue the approval conversation; approved → execute; executed → report and hand off |
+| `/opil:compose <brief\|slug>` | Derive lockups/banners/social cards from approved components → per-deliverable plan → approved execution | the plan's front-matter `status` — proposed → continue the approval conversation; approved → execute; executed → report and hand off |
 | `/opil:redo <slug> [feedback]` | Rework one rejected asset, anchor-chained | the asset's origin (a sheet manifest or a plan) and the owner's rework feedback |
 | `/opil:review` | Walk the approval loop over QC-passed assets | preview entries with no matching `approved`/`rejected` line in `approvals.md` |
 | `/opil:status [name]` | Campaign dashboard, derived from the filesystem | nothing to resume — a read-only snapshot across approvals, sheets, plans, and contract gaps |
@@ -366,7 +461,7 @@ entries:
 
 - **Per-asset verdicts**, written by `/opil:review`: `YYYY-MM-DD <slug> approved|rejected [note]`.
   Only QC-passed assets are ever presented for a verdict.
-- **Plan approvals**, written per the freeform pipeline's Durable-write rule above: date, plan
+- **Plan approvals**, written per the plan pipeline's Durable-write rule above: date, plan
   path, the owner's verbatim approving utterance, and any defaults resolved.
 
 It is explicitly the interim ledger until `build_manifest.py` exists to aggregate status
@@ -432,7 +527,7 @@ Every campaign lives under `.openillust/campaigns/<name>/`, anchored by `campaig
 | `qc.occupancy_warn` / `occupancy_fail` / `center_offset_max` | yes | gate thresholds, as fractions of canvas |
 | `normalize.margin` / `min_area_ratio` | no | `svg_normalize.py` defaults |
 | `prompt.palette_rules` / `style_rules` / `avoid` | yes for sheet mode | verbatim lines injected into the sheet-generation prompt |
-| `asset_profiles.<type>` | no | per-type policy, e.g. `{ text: forbidden }`, `{ text: allowed, canvas: 1024 }` — consumed by the freeform plan flow; not yet read by `qc_svg.py` |
+| `asset_profiles.<type>` | no | per-type overrides — `canvas` (scalar or `[w, h]`), an optional `qc:` threshold-override block, `format: svg\|webp\|png` for raster deliverables. Read by `qc_svg.py --profile <type>` (canvas replaces the root canvas; `qc:` overrides field-by-field) and by the compose flow for deliverable format |
 | `tooling.vectorizer` | no | execution default (`recraft` or `vtracer`) — advisory, not part of the style contract |
 
 Unknown extra keys are allowed (campaigns differ; consumers read what they know). `/opil:init`

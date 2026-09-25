@@ -10,8 +10,8 @@ explicit flags below.
 
 Usage:
   python svg_normalize.py --input raw.svg --output icon.svg --campaign campaign.yaml
-      [--margin 0.13] [--drop-background] [--min-area-ratio 0.0005]
-      [--drop-color HEX]... [--map SRC=DST]...
+      [--canvas 1024|1760x320] [--margin 0.13] [--drop-background]
+      [--min-area-ratio 0.0005] [--drop-color HEX]... [--map SRC=DST]...
 
 Then run qc_svg.py on the result.
 
@@ -20,7 +20,9 @@ Then run qc_svg.py on the result.
 references/campaign-schema.md). Precedence for --margin/--min-area-ratio: an
 explicit flag always wins; then the campaign's normalize.* value; then this
 script's generic default. Precedence for --canvas: an explicit flag always
-wins; otherwise the campaign's canvas value is used.
+wins; otherwise the campaign's canvas value is used. --canvas takes a bare
+number for a square canvas (unchanged), or WxH (e.g. 1760x320) for a
+non-square target canvas.
 """
 import argparse
 import re
@@ -39,6 +41,25 @@ def round_d(d, places=2):
 # normalize.margin / normalize.min_area_ratio.
 DEFAULT_MARGIN = 0.13
 DEFAULT_MIN_AREA_RATIO = 0.0005
+
+
+CANVAS_RE = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*[xX]\s*(\d+(?:\.\d+)?)\s*$")
+
+
+def parse_canvas(s):
+    """Parse --canvas: a bare number (square) or WxH (non-square), e.g. 1760x320."""
+    m = CANVAS_RE.match(s)
+    if m:
+        w, h = float(m.group(1)), float(m.group(2))
+    else:
+        try:
+            w = h = float(s)
+        except ValueError:
+            raise argparse.ArgumentTypeError(
+                f"invalid canvas {s!r}: expected a number or WxH (e.g. 1760x320)")
+    if w <= 0 or h <= 0:
+        raise argparse.ArgumentTypeError(f"canvas dimensions must be positive: {s!r}")
+    return (w, h)
 
 
 def rgb(hexstr):
@@ -67,8 +88,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--input", required=True)
     ap.add_argument("--output", required=True)
-    ap.add_argument("--canvas", type=float, default=None,
-                    help="viewBox size; default is the campaign's canvas value")
+    ap.add_argument("--canvas", type=parse_canvas, default=None,
+                    help="viewBox size: N for square, or WxH (e.g. 1760x320) for "
+                         "non-square; default is the campaign's canvas value")
     ap.add_argument("--margin", type=float, default=None,
                     help="default 0.13, or campaign normalize.margin if set")
     ap.add_argument("--min-area-ratio", type=float, default=None,
@@ -95,7 +117,8 @@ def main():
     palette = [str(c).upper() for c in campaign["palette"]["allowed"]]
 
     if args.canvas is None:
-        args.canvas = float(campaign["canvas"])
+        c = float(campaign["canvas"])
+        args.canvas = (c, c)
 
     normalize_cfg = campaign.get("normalize")
     if args.margin is None:
@@ -168,14 +191,20 @@ def main():
     y0 = min(s["bbox"][1] for s in kept)
     x1 = max(s["bbox"][2] for s in kept)
     y1 = max(s["bbox"][3] for s in kept)
-    usable = args.canvas * (1 - 2 * args.margin)
-    k = usable / max(x1 - x0, y1 - y0)
-    ox = (args.canvas - (x1 - x0) * k) / 2 - x0 * k
-    oy = (args.canvas - (y1 - y0) * k) / 2 - y0 * k
+    canvas_w, canvas_h = args.canvas
+    usable_w = canvas_w * (1 - 2 * args.margin)
+    usable_h = canvas_h * (1 - 2 * args.margin)
+    # Uniform scale: fit the content bbox inside the per-axis usable box.
+    # When canvas_w == canvas_h (square path), this is bit-identical to the
+    # old usable / max(x1 - x0, y1 - y0), since usable_w == usable_h then and
+    # min(a/p, a/q) is the same division as a / max(p, q).
+    k = min(usable_w / (x1 - x0), usable_h / (y1 - y0))
+    ox = (canvas_w - (x1 - x0) * k) / 2 - x0 * k
+    oy = (canvas_h - (y1 - y0) * k) / 2 - y0 * k
     mat = Matrix(f"translate({ox},{oy}) scale({k})")
 
     out = ['<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %d %d">'
-           % (int(args.canvas), int(args.canvas)),
+           % (int(canvas_w), int(canvas_h)),
            "  <!-- normalized by svg_normalize.py from %s -->" % Path(args.input).name]
     dropped = len(shapes) - len(kept)
     for s in kept:
@@ -193,8 +222,12 @@ def main():
     out.append("</svg>")
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     Path(args.output).write_text("\n".join(out) + "\n", encoding="utf-8")
+    if canvas_w == canvas_h:
+        fit = f"{usable_w:.0f}px of {canvas_w:g}"
+    else:
+        fit = f"{usable_w:.0f}x{usable_h:.0f}px of {canvas_w:g}x{canvas_h:g}"
     print(f"wrote {args.output}: kept {len(kept)} shapes, dropped {dropped}; "
-          f"scale {k:.4f}, content fitted to {usable:.0f}px of {args.canvas:g}")
+          f"scale {k:.4f}, content fitted to {fit}")
 
 
 if __name__ == "__main__":
